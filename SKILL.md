@@ -1,6 +1,6 @@
 ---
 name: razor
-description: "Minimize local diff size against merge base for uncommitted branch work. Use when asked to tighten or shrink a local diff while keeping core behavior, optimizing first for merge-base netlines (insertions - deletions), then for total churn (insertions + deletions), and producing a ranked reduction plan in this order: (1) behavior-preserving refactors, then (2) options with increasing functionality loss."
+description: "Minimize local diff size against merge base for uncommitted branch work. Use when asked to tighten or shrink a local diff while keeping core behavior, optimizing first for new lines (insertions), then for total churn (insertions + deletions), and producing a ranked reduction plan in this order: (1) behavior-preserving refactors, then (2) options with increasing functionality loss."
 ---
 
 # Razor
@@ -16,14 +16,15 @@ Reduce local diff size with merge-base-anchored analysis and explicit tradeoffs.
   2. Group B contains only behavior-changing options (explicit functionality loss or constraint).
   3. Never mix behavior-changing ideas into Group A or behavior-preserving ideas into Group B.
 - Optimize in strict priority order against merge base:
-  1. Primary: minimize netlines (`insertions - deletions`).
+  1. Primary: minimize new lines (`insertions`).
   2. Secondary: minimize total churn (`insertions + deletions`).
-- Do not recommend reducing tests, documentation, or comments.
+- Do not recommend reducing tests, documentation, or comments. **Comments are never removable churn** — do not count comment lines as candidates for reduction, and do not remove, trim, or condense them.
 - Prioritize app/runtime code over test code when proposing reductions:
   - Treat app/runtime files as the primary optimization surface.
   - Only propose test-file reductions after credible app/runtime opportunities are exhausted or blocked.
   - Any test-file suggestions must preserve coverage and assertions quality.
 - Do not recommend refactors that reduce code clarity (e.g., collapsing multi-line logic into dense ternaries, removing meaningful variable names, compressing well-formatted code into fewer lines). Only suggest refactors that maintain or increase clarity.
+- All changes must pass prettier. Run `npx prettier --write` on every modified file after applying edits. Measure the diff after prettier, not before — any line savings that prettier reverses do not count toward reduction totals.
 - Do not recommend splitting work into multiple PRs.
 - Never use destructive git commands (`reset --hard`, `checkout --`, etc.).
 - After each cut-down-diff execution pass, start a fresh cut-down-diff planning run only once execution is complete (never in the middle of execution).
@@ -52,15 +53,24 @@ The diff is the full working tree (committed + uncommitted + untracked) vs merge
    - `git ls-files --others --exclude-standard` (untracked files)
    - `wc -l` on each untracked code file (these lines count as insertions)
 2. Report **single** set of totals combining tracked diff + untracked file lines:
-   - `insertions` (tracked insertions + untracked file lines)
+   - `insertions` (tracked insertions + untracked file lines) (primary metric)
    - `deletions` (tracked deletions only)
-   - `netlines = insertions - deletions` (primary metric)
    - `total churn = insertions + deletions` (secondary metric)
-3. Rank top files by touched lines and highlight biggest netline contributors. Include untracked new files in the ranking.
+3. Rank top files by insertions and highlight biggest new-line contributors. Include untracked new files in the ranking.
 4. Split hotspot reporting into two buckets and prioritize in this order:
    - App/runtime code hotspots (primary)
    - Test code hotspots (secondary)
    Use app/runtime hotspots to drive idea generation unless blocked.
+
+### 2.5) Full-diff read (mandatory)
+**Read every single line of every single file in the diff.** This is non-negotiable:
+- For every file listed by `git diff --name-status "$MB"`, read the complete current file contents (not just diff hunks).
+- For new files (status `A`), read the entire file.
+- For modified files (status `M`), read the entire file plus review the diff hunks (`git diff "$MB" -- <file>`).
+- Do not skip, sample, or summarize. Read every line.
+- Use the Read tool (not grep/search) to ensure full coverage. Split large files into multiple reads if needed.
+- Only after completing the full read of all files should you proceed to idea generation.
+- This full read must happen on every razor invocation, not just the first.
 
 ### 3) Generate reduction ideas in two strictly separate groups
 
@@ -79,7 +89,7 @@ Prioritization for Group A:
 
 For each idea include:
 1. Files/hunks affected.
-2. Estimated netline reduction (`insertions - deletions`).
+2. Estimated new-line reduction (`insertions`).
 3. Estimated total-churn reduction (`insertions + deletions`).
 4. Why behavior remains unchanged.
 
@@ -98,7 +108,7 @@ Guardrail:
 
 For each option include:
 1. Exact behavior removed or constrained.
-2. Estimated netline reduction (`insertions - deletions`).
+2. Estimated new-line reduction (`insertions`).
 3. Estimated total-churn reduction (`insertions + deletions`).
 4. Risk/impact statement.
 
@@ -106,12 +116,13 @@ For each option include:
 1. Implement only user-selected options.
 2. Keep edits minimal and local.
 3. Remove dead references created by those edits.
-4. Run targeted validation for remaining behavior.
+4. Run prettier on every modified file (`npx prettier --write <file>`). If prettier reformats the code, the post-prettier diff is the real diff — measure against that. A reduction that prettier undoes does not count.
+5. Run targeted validation for remaining behavior.
 
 ### 5) Re-measure and report
 1. Re-run merge-base diff stats.
 2. Show before/after for both metrics:
-   - netlines (`insertions - deletions`)
+   - new lines (`insertions`)
    - total churn (`insertions + deletions`)
 3. Show percent reduction for both metrics.
 4. List exactly what changed and why.
@@ -124,13 +135,13 @@ For each option include:
 ## Output contract
 Always return:
 1. Merge base SHA and base ref used.
-2. Before stats vs merge base (insertions, deletions, netlines, total churn).
+2. Before stats vs merge base (insertions, deletions, total churn).
 3. Ordered reduction plan:
    - Group A first: direct refactor ideas (no behavior loss), up to 10 ideas.
    - Group B second: functionality-loss ladder (low to high), up to 10 options.
    - Keep Group A and Group B strictly separated (no cross-over ideas).
 4. For every proposed and applied option, include estimated/actual impact on:
-   - Primary metric: netlines.
+   - Primary metric: new lines (insertions).
    - Secondary metric: total churn.
 5. After applying changes: after stats, primary reduction first, secondary reduction second, and residual hotspots.
 
@@ -151,7 +162,7 @@ git ls-files --others --exclude-standard  # untracked new files
 ```bash
 # Totals for tracked files (unified working-tree diff — do NOT use "$MB" HEAD)
 git diff --numstat "$MB" \
-| awk '{adds+=$1; dels+=$2} END {printf "insertions=%d\ndeletions=%d\nnetlines=%d\ntotal_churn=%d\n", adds, dels, adds-dels, adds+dels}'
+| awk '{adds+=$1; dels+=$2} END {printf "insertions=%d (primary)\ndeletions=%d\ntotal_churn=%d (secondary)\n", adds, dels, adds+dels}'
 ```
 
 ```bash
@@ -161,8 +172,8 @@ git ls-files --others --exclude-standard | grep -E '\.(go|ts|tsx|js|jsx|py|rs)$'
 ```
 
 ```bash
-# Per-file ranking (tracked files — append untracked files manually)
+# Per-file ranking by insertions (tracked files — append untracked files manually)
 git diff --numstat "$MB" \
-| awk '{t=$1+$2; print t "\t" $1 "\t" $2 "\t" $3}' \
+| awk '{print $1 "\t" $2 "\t" $1+$2 "\t" $3}' \
 | sort -nr
 ```

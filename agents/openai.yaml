@@ -1,4 +1,4 @@
 interface:
-  display_name: "Razor"
+  display_name: "Cut Down Diff"
   short_description: "Shrink merge-base diff with explicit tradeoffs"
-  default_prompt: "Use $razor to minimize my local diff against merge base with behavior-preserving refactors first, then increasing-loss options."
+  default_prompt: "Use $cut-down-diff to minimize my local diff against merge base with behavior-preserving refactors first, then increasing-loss options."
