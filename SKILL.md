@@ -1,179 +1,73 @@
 ---
 name: razor
-description: "Minimize local diff size against merge base for uncommitted branch work. Use when asked to tighten or shrink a local diff while keeping core behavior, optimizing first for new lines (insertions), then for total churn (insertions + deletions), and producing a ranked reduction plan in this order: (1) behavior-preserving refactors, then (2) options with increasing functionality loss."
+description: "Minimize local diff size against merge base for uncommitted branch work using only behavior-preserving, scope-preserving architectural reductions."
 ---
 
 # Razor
 
-Reduce local diff size with merge-base-anchored analysis and explicit tradeoffs.
+Reduce local diff size with merge-base-anchored architectural planning and behavior-preserving execution only.
+
+## Core Iteration Directive
+On every iteration, follow this exact directive:
+
+"Deeply analyze this implementation across the entire PR (not file-by-file in isolation), and create a detailed plan called TRIM_CODEX.MD with the most impactful architectural ideas to dramatically reduce the total size of this PR, without reducing scope or behavior. Comments do not count."
 
 ## Non-negotiables
-- Always anchor analysis to merge base: `MB=$(git merge-base <base-ref> HEAD)`.
-- **Unified diff only**: Always measure the working tree (committed + staged + unstaged) as ONE diff against merge base using `git diff "$MB"`. Never separately analyze "committed vs MB" and "uncommitted vs HEAD" — the PR diff is the full working-tree state, period. Include untracked new files in the totals (count their lines as insertions).
-- Preserve behavior by default.
-- Keep idea groups strictly separate:
-  1. Group A contains only behavior-preserving ideas (no behavior change).
-  2. Group B contains only behavior-changing options (explicit functionality loss or constraint).
-  3. Never mix behavior-changing ideas into Group A or behavior-preserving ideas into Group B.
-- Optimize in strict priority order against merge base:
-  1. Primary: minimize new lines (`insertions`).
-  2. Secondary: minimize total churn (`insertions + deletions`).
-- Do not recommend reducing tests, documentation, or comments. **Comments are never removable churn** — do not count comment lines as candidates for reduction, and do not remove, trim, or condense them.
-- Prioritize app/runtime code over test code when proposing reductions:
-  - Treat app/runtime files as the primary optimization surface.
-  - Only propose test-file reductions after credible app/runtime opportunities are exhausted or blocked.
-  - Any test-file suggestions must preserve coverage and assertions quality.
-- Do not recommend refactors that reduce code clarity (e.g., collapsing multi-line logic into dense ternaries, removing meaningful variable names, compressing well-formatted code into fewer lines). Only suggest refactors that maintain or increase clarity.
-- All changes must pass prettier. Run `npx prettier --write` on every modified file after applying edits. Measure the diff after prettier, not before — any line savings that prettier reverses do not count toward reduction totals.
-- Do not recommend splitting work into multiple PRs.
-- Never use destructive git commands (`reset --hard`, `checkout --`, etc.).
-- After each cut-down-diff execution pass, start a fresh cut-down-diff planning run only once execution is complete (never in the middle of execution).
-- Do not recommend functionality-loss options that remove or undermine the branch’s core feature objective.
-- If the branch is centered on a capability (for example formula-preserving exports), loss options must keep that capability intact.
-- Do not recommend options that remove, disable, or materially reduce non-main-layer harness coverage.
-- Track option-selection history across iterations:
-  - Do not re-suggest the same previously declined/skipped B options unless the user explicitly asks to reconsider them.
-  - Still propose new, distinct B options each rerun when available (do not treat prior skips as a blanket ban on all future B ideas).
-  - When prior B ideas were declined, keep producing a full B ladder with newly available options (low/medium/higher), subject to core-feature and coverage guardrails.
+- Always anchor to merge base: `MB=$(git merge-base <base-ref> HEAD)` (`origin/latest` by default).
+- Use unified working-tree diff only: `git diff "$MB"`.
+- Include untracked code-file lines in insertion totals.
+- Only propose/apply behavior-preserving, scope-preserving reductions.
+- Never generate functionality-loss or scope-reduction options.
+- Do not remove/trim comments or doc-comments. Comment lines do not count toward reduction targets.
+- Keep optimization priority:
+  1. Primary: reduce non-comment insertions.
+  2. Secondary: reduce non-comment total churn.
+- Optimize at PR architecture level first:
+  1. Identify duplication and redundant abstractions spanning multiple files/components.
+  2. Prefer ideas that remove whole cross-file patterns or flows, not local line edits.
+  3. Treat file-local cleanups as fallback only after high-impact PR-wide ideas are exhausted.
+- Read every line of every file in the diff on every iteration.
+- Update `TRIM_CODEX.MD` every iteration before execution, then refresh after re-measurement.
+- Run formatting on touched files and run targeted validation each pass.
+- Never use destructive git commands.
 
 ## Workflow
-
-### 1) Establish merge-base anchor
-1. Resolve base ref (`origin/latest` unless user specifies another base).
-2. Compute merge base: `MB=$(git merge-base <base-ref> HEAD)`.
-3. Show divergence: `git rev-list --left-right --count <base-ref>...HEAD`.
-
-### 2) Measure unified working-tree diff against merge base
-The diff is the full working tree (committed + uncommitted + untracked) vs merge base. This is exactly what the PR will contain. Never split this into "committed" and "uncommitted" sub-analyses.
-
-1. Run:
-   - `git status --short` (overview of tracked modifications and untracked files)
-   - `git diff --numstat "$MB"` (unified working-tree diff for tracked files)
-   - `git diff --name-status "$MB"` (change types)
-   - `git ls-files --others --exclude-standard` (untracked files)
-   - `wc -l` on each untracked code file (these lines count as insertions)
-2. Report **single** set of totals combining tracked diff + untracked file lines:
-   - `insertions` (tracked insertions + untracked file lines) (primary metric)
-   - `deletions` (tracked deletions only)
-   - `total churn = insertions + deletions` (secondary metric)
-3. Rank top files by insertions and highlight biggest new-line contributors. Include untracked new files in the ranking.
-4. Split hotspot reporting into two buckets and prioritize in this order:
-   - App/runtime code hotspots (primary)
-   - Test code hotspots (secondary)
-   Use app/runtime hotspots to drive idea generation unless blocked.
-
-### 2.5) Full-diff read (mandatory)
-**Read every single line of every single file in the diff.** This is non-negotiable:
-- For every file listed by `git diff --name-status "$MB"`, read the complete current file contents (not just diff hunks).
-- For new files (status `A`), read the entire file.
-- For modified files (status `M`), read the entire file plus review the diff hunks (`git diff "$MB" -- <file>`).
-- Do not skip, sample, or summarize. Read every line.
-- Use the Read tool (not grep/search) to ensure full coverage. Split large files into multiple reads if needed.
-- Only after completing the full read of all files should you proceed to idea generation.
-- This full read must happen on every razor invocation, not just the first.
-
-### 3) Generate reduction ideas in two strictly separate groups
-
-#### Group A) Direct refactor ideas (behavior-preserving, no feature loss)
-Generate up to 10 ideas for section A (fewer only if there are not enough credible, file-specific opportunities).
-Produce concrete, file-specific edits that reduce churn without changing behavior, such as:
-1. Replace broad rewrites with targeted edits in existing functions.
-2. Reuse existing helpers instead of introducing duplicated logic.
-3. Collapse equivalent add/delete churn into in-place edits.
-4. Remove incidental mechanical churn not required for behavior.
-5. Minimize API-surface changes that force cascading edits.
-
-Prioritization for Group A:
-1. Propose app/runtime-code ideas first.
-2. Add test-code ideas only after app/runtime opportunities are covered or insufficient.
-
-For each idea include:
-1. Files/hunks affected.
-2. Estimated new-line reduction (`insertions`).
-3. Estimated total-churn reduction (`insertions + deletions`).
-4. Why behavior remains unchanged.
-
-#### Group B) Functionality-loss ladder (increasing loss)
-Only after section A, provide up to 10 options with explicit rising loss (fewer only if there are not enough credible options):
-1. Low loss.
-2. Medium loss.
-3. Higher loss.
-Every Group B option must explicitly change or constrain behavior.
-
-Guardrail:
-- Exclude any option that cuts the core purpose of the branch; if such an option would otherwise appear, replace it with a lower-impact constraint that preserves the core behavior.
-- Exclude options that remove non-main-layer harnesses or their coverage; propose alternatives that keep that coverage intact.
-- Exclude only B ideas previously declined or skipped by the user in earlier cut-down-diff iterations; continue offering new B ideas that were not previously declined.
-- Prefer app/runtime behavior constraints over test-scope constraints when both are available.
-
-For each option include:
-1. Exact behavior removed or constrained.
-2. Estimated new-line reduction (`insertions`).
-3. Estimated total-churn reduction (`insertions + deletions`).
-4. Risk/impact statement.
-
-### 4) Apply selected options
-1. Implement only user-selected options.
-2. Keep edits minimal and local.
-3. Remove dead references created by those edits.
-4. Run prettier on every modified file (`npx prettier --write <file>`). If prettier reformats the code, the post-prettier diff is the real diff — measure against that. A reduction that prettier undoes does not count.
-5. Run targeted validation for remaining behavior.
-
-### 5) Re-measure and report
-1. Re-run merge-base diff stats.
-2. Show before/after for both metrics:
-   - new lines (`insertions`)
-   - total churn (`insertions + deletions`)
-3. Show percent reduction for both metrics.
-4. List exactly what changed and why.
-
-### 6) Post-execution planning rerun
-1. After finishing execution and reporting results, immediately start a new cut-down-diff planning run.
-2. Use the updated working tree and the same merge-base anchor unless the user specifies a new base.
-3. Generate the next ranked plan from the new residual hotspots.
+1. Establish base and merge base.
+2. Measure unified diff (`status`, `numstat`, `name-status`, untracked files, untracked code lines).
+3. Compute baseline metrics:
+   - insertions
+   - deletions
+   - total churn
+   - comment-line additions (reported separately, not targeted)
+4. Full-diff read (mandatory):
+   - For each file in `git diff --name-status "$MB"`, read full current file contents.
+   - For modified files, also review `git diff "$MB" -- <file>` hunks.
+5. Deep architectural analysis:
+   - Identify structural duplication and avoidable abstraction layers across the full PR surface.
+   - Map cross-file data/control flow to find consolidation cuts that remove entire repeated paths.
+   - Rank ideas by expected PR-wide churn reduction; prioritize multi-file high-leverage cuts.
+6. Write/update `TRIM_CODEX.MD` with:
+   - Goal and invariants.
+   - Merge-base baseline and divergence.
+   - Runtime/test hotspot ranking.
+   - Architectural diagnosis of churn drivers.
+   - Ranked behavior-preserving architectural ideas with explicit PR-wide scope (estimated insertion/churn savings, risk, validation notes).
+   - Clear separation of `PR-wide architectural cuts` vs `local cleanup` (local cleanup only when no higher-impact architectural cuts remain).
+   - Ordered execution sequence and validation gates.
+   - Iteration history.
+7. Apply viable behavior-preserving ideas.
+8. Format touched files.
+9. Run targeted validation.
+10. Re-measure and refresh `TRIM_CODEX.MD` with before/after metrics and applied/skipped status.
+11. Rerun fresh planning on the updated tree.
 
 ## Output contract
 Always return:
-1. Merge base SHA and base ref used.
-2. Before stats vs merge base (insertions, deletions, total churn).
-3. Ordered reduction plan:
-   - Group A first: direct refactor ideas (no behavior loss), up to 10 ideas.
-   - Group B second: functionality-loss ladder (low to high), up to 10 options.
-   - Keep Group A and Group B strictly separated (no cross-over ideas).
-4. For every proposed and applied option, include estimated/actual impact on:
-   - Primary metric: new lines (insertions).
-   - Secondary metric: total churn.
-5. After applying changes: after stats, primary reduction first, secondary reduction second, and residual hotspots.
-
-## Command snippets
-
-```bash
-# Setup
-BASE_REF=origin/latest
-MB=$(git merge-base "$BASE_REF" HEAD)
-
-# Overview
-git status --short
-git diff --numstat "$MB"         # unified working-tree diff (committed+uncommitted) vs merge base
-git diff --name-status "$MB"
-git ls-files --others --exclude-standard  # untracked new files
-```
-
-```bash
-# Totals for tracked files (unified working-tree diff — do NOT use "$MB" HEAD)
-git diff --numstat "$MB" \
-| awk '{adds+=$1; dels+=$2} END {printf "insertions=%d (primary)\ndeletions=%d\ntotal_churn=%d (secondary)\n", adds, dels, adds+dels}'
-```
-
-```bash
-# Add untracked code file lines to get full PR totals
-# (untracked lines are pure insertions — add to tracked insertions above)
-git ls-files --others --exclude-standard | grep -E '\.(go|ts|tsx|js|jsx|py|rs)$' | xargs wc -l | tail -1
-```
-
-```bash
-# Per-file ranking by insertions (tracked files — append untracked files manually)
-git diff --numstat "$MB" \
-| awk '{print $1 "\t" $2 "\t" $1+$2 "\t" $3}' \
-| sort -nr
-```
+1. Base ref and merge-base SHA.
+2. Before stats and after stats (insertions, deletions, churn).
+3. Primary and secondary percent reductions.
+4. Comment-line additions count (reported separately).
+5. Ranked behavior-preserving ideas and applied changes.
+6. Confirmation `TRIM_CODEX.MD` was refreshed this iteration.
+7. Confirmation every diff file was fully read this iteration.
+8. Explicit statement whether any additional behavior-preserving, scope-preserving reductions remain after fresh rerun.
